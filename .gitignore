@@ -1,0 +1,9 @@
+# STM32CubeIDE build files
+/Debug/
+/Release/
+
+# Eclipse project files (user-specific)
+.settings/
+.project
+.cproject
+*.launch
