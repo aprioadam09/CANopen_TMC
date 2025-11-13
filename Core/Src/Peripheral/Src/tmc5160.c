@@ -50,3 +50,34 @@ int32_t tmc5160_read_register(uint8_t address) {
 
     return received_value;
 }
+
+void tmc5160_init(void) {
+    // This sequence is based on the TMC5160 Datasheet Section 23.1 Initialization Examples.
+    // It configures the driver for SpreadCycle and enables StealthChop below a certain speed.
+
+    // 1. Configure Chopper (CHOPCONF Register)
+    // A known-good starting value for many motors.
+    // TOFF=3, HSTRT=4, HEND=1, TBL=2, CHM=0 (SpreadCycle)
+    tmc5160_write_register(TMC5160_CHOPCONF, 0x000100C3);
+
+    // 2. Configure Driver Current (IHOLD_IRUN Register)
+    // Sets the run current to the maximum (31/31) and the hold current to a lower value.
+    // IRUN = 31 (max current)
+    // IHOLD = 10 (approx 1/3 of max current)
+    // IHOLDDELAY = 6 (delay before current reduction)
+    tmc5160_write_register(TMC5160_IHOLD_IRUN, 0x00061F0A);
+
+    // 3. Configure Standstill Power-Down Delay (TPOWERDOWN Register)
+    // Sets the delay after standstill before the driver reduces current to IHOLD.
+    // TPOWERDOWN = 10 (approx. 0.8 seconds with 12MHz clock)
+    tmc5160_write_register(TMC5160_TPOWERDOWN, 0x0000000A);
+
+    // 4. Enable StealthChop (GCONF Register)
+    // Set en_pwm_mode (bit 2) to 1. This enables voltage-PWM mode (StealthChop).
+    tmc5160_write_register(TMC5160_GCONF, 0x00000004);
+
+    // 5. Set StealthChop threshold speed (TPWMTHRS Register)
+    // The driver will switch from StealthChop to SpreadCycle when speed exceeds this value.
+    // TPWM_THRS = 500 (a low speed value)
+    tmc5160_write_register(TMC5160_TPWMTHRS, 0x000001F4);
+}

@@ -9,6 +9,7 @@
 #define TMC5160_IOIN            0x04 // Input/Output Status
 #define TMC5160_IHOLD_IRUN      0x10 // Driver Current Control
 #define TMC5160_TPOWERDOWN      0x11 // Standstill Delay
+#define TMC5160_TPWMTHRS        0x13
 #define TMC5160_CHOPCONF        0x6C // Chopper Configuration
 #define TMC5160_XTARGET         0x2D // Target Position
 
@@ -34,6 +35,16 @@ void tmc5160_write_register(uint8_t address, int32_t value);
  * @return int32_t The 32-bit value read from the register.
  */
 int32_t tmc5160_read_register(uint8_t address);
+
+/**
+ * @brief Initializes the TMC5160 with a basic, proven configuration.
+ *
+ * This function configures the essential registers for motor operation, including
+ * chopper settings (CHOPCONF), driver current (IHOLD_IRUN), and enables
+ * StealthChop mode for quiet operation at low speeds.
+ * It is based on the "Initialization Examples" from the TMC5160 datasheet.
+ */
+void tmc5160_init(void);
 
 
 #endif /* PERIPHERAL_INC_TMC5160_H_ */
