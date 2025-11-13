@@ -9,9 +9,21 @@
 #define TMC5160_IOIN            0x04 // Input/Output Status
 #define TMC5160_IHOLD_IRUN      0x10 // Driver Current Control
 #define TMC5160_TPOWERDOWN      0x11 // Standstill Delay
-#define TMC5160_TPWMTHRS        0x13
+#define TMC5160_TPWMTHRS        0x13 // StealthChop voltage PWM mode
 #define TMC5160_CHOPCONF        0x6C // Chopper Configuration
 #define TMC5160_XTARGET         0x2D // Target Position
+
+// Ramp Generator Registers
+#define TMC5160_RAMPMODE        0x20 // Ramp Mode configuration
+#define TMC5160_V1              0x25 // First acceleration phase threshold speed
+#define TMC5160_AMAX            0x26 // Acceleration
+#define TMC5160_VMAX            0x27 // Maximum velocity
+#define TMC5160_DMAX            0x28 // Deceleration
+#define TMC5160_D1				0x2A // Deceleration between V1 and VSTOP
+#define TMC5160_VSTOP			0x2B // Motor Stop Velocity
+#define TMC5160_TZEROWAIT		0x2C
+#define TMC5160_XTARGET         0x2D // Target Position
+#define TMC5160_RAMP_STAT		0x35
 
 /**
  * @brief Writes a 32-bit value to a TMC5160 register.
