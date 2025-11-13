@@ -1,62 +1,40 @@
 #include "stm32f4xx.h"
 #include "rcc.h"
 #include "spi.h"
+#include "tmc5160.h"
 
 // Global volatile variables for easy debugging
-volatile uint8_t spi_status_byte = 0;
-volatile uint32_t ioin_register_value = 0;
-
-// Temporary array to hold the raw received bytes
-volatile uint8_t received_datagram[5] = {0};
+volatile int32_t initial_xtarget_value = 0;
+volatile int32_t value_to_write = 0x87654321;
+volatile int32_t final_xtarget_value = 0;
 
 void delay(volatile uint32_t count) {
     while(count--);
 }
 
 int main(void) {
-    // 1. Configure system clock
+    // 1. Configure system clock and initialize SPI
     rcc_system_clock_config();
-
-    // 2. Initialize SPI1
     spi1_init();
+    delay(1000000); // Wait for TMC5160 to power up
 
-    // Give the TMC5160 a moment to power up fully
-    delay(1000000);
+    // --- STEP A: Initial Read ---
+    // Baca XTARGET. Setelah reset, ini harus 0.
+    initial_xtarget_value = tmc5160_read_register(TMC5160_XTARGET);
 
-    // --- TRANSACTION 1: Request to read the IOIN register (addr 0x04) ---
-    // The data received during this transaction is not useful yet.
-    spi1_cs_select();
-    spi1_transfer(0x04); // Address 0x04 (IOIN), with W bit = 0 (read)
-    spi1_transfer(0x00); // Dummy byte
-    spi1_transfer(0x00); // Dummy byte
-    spi1_transfer(0x00); // Dummy byte
-    spi1_transfer(0x00); // Dummy byte
-    spi1_cs_deselect();
+    // --- STEP B: Write Operation ---
+    // Tulis nilai 32-bit penuh ke XTARGET.
+    tmc5160_write_register(TMC5160_XTARGET, value_to_write);
 
-    // A small delay between transactions is good practice
-    delay(1000);
+    delay(1000); // Delay singkat
 
-    // --- TRANSACTION 2: Clock out the requested data ---
-    // The data we receive NOW is the content of the IOIN register.
-    // We can send a "no-op" command, like reading GCONF (addr 0x00).
-    spi1_cs_select();
-    received_datagram[0] = spi1_transfer(0x00); // Send dummy command, receive STATUS byte
-    received_datagram[1] = spi1_transfer(0x00); // Send dummy, receive IOIN MSB
-    received_datagram[2] = spi1_transfer(0x00); // Send dummy, receive IOIN byte 2
-    received_datagram[3] = spi1_transfer(0x00); // Send dummy, receive IOIN byte 1
-    received_datagram[4] = spi1_transfer(0x00); // Send dummy, receive IOIN LSB
-    spi1_cs_deselect();
+    // --- STEP C: Final Read ---
+    // Baca kembali XTARGET untuk verifikasi.
+    final_xtarget_value = tmc5160_read_register(TMC5160_XTARGET);
 
-    // Combine the bytes into a 32-bit value for easier inspection
-    spi_status_byte = received_datagram[0];
-    ioin_register_value = (received_datagram[1] << 24) |
-                          (received_datagram[2] << 16) |
-                          (received_datagram[3] << 8)  |
-                          (received_datagram[4] << 0);
-
-    // 3. Stop here for debugging
+    // --- STEP D: Stop for debugging ---
     while(1) {
-        // Infinite loop to halt the processor
+        // Halt processor for inspection
     }
     return 0;
 }
