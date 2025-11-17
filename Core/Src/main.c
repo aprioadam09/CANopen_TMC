@@ -1,63 +1,74 @@
 #include "stm32f4xx.h"
 #include "rcc.h"
-#include "spi.h"
-#include "tmc5160.h"
+#include "can.h"
+#include <string.h> // For memcmp
 
-// Simple delay function for a visual pause
+// Global volatile variables for DEBUGGING ONLY
+volatile can_msg_t sent_msg_for_debug;
+volatile can_msg_t received_msg_for_debug;
+volatile int test_status = 0; // 0=Pending, 1=Success, -1=Fail
+
 void delay(volatile uint32_t count) {
     while(count--);
 }
 
-/**
- * @brief Polls the RAMP_STAT register until the motor has reached its target position,
- *        then clears the event flag.
- */
-void wait_target_reached(void) {
-    const int32_t POSITION_REACHED_FLAG = (1 << 9);
-    const int32_t EVENT_POS_REACHED_CLEAR = (1 << 7); // Bit 7 is the event flag
-
-    // 1. Poll the register until the position_reached flag is active
-    while ((tmc5160_read_register(TMC5160_RAMP_STAT) & POSITION_REACHED_FLAG) == 0);
-
-    // 2. Clear the event_pos_reached flag (R+WC) to allow detection for the next move.
-    tmc5160_write_register(TMC5160_RAMP_STAT, EVENT_POS_REACHED_CLEAR);
-}
-
 int main(void) {
-    // --- Initialization ---
+    // 1. Basic hardware initialization
     rcc_system_clock_config();
-    spi1_init();
-    tmc5160_init();
 
-    // --- Motion Profile Configuration ---
-    tmc5160_write_register(TMC5160_V1, 0);
-    tmc5160_write_register(TMC5160_AMAX, 1000);
-    tmc5160_write_register(TMC5160_DMAX, 1000);
-    tmc5160_write_register(TMC5160_D1, 1000);
-    tmc5160_write_register(TMC5160_VMAX, 51200);
-    tmc5160_write_register(TMC5160_VSTOP, 100);
+    // 2. Initialize the CAN peripheral in LOOPBACK mode
+    can_init(true);
 
-    // Add a zero-wait time for smooth direction reversals
-    tmc5160_write_register(TMC5160_TZEROWAIT, 5000);
+    // 3. Prepare the test message using a LOCAL, NON-VOLATILE variable
+    can_msg_t tx_msg;
+    tx_msg.id = 0x123;
+    tx_msg.len = 8;
+    tx_msg.data[0] = 0xDE;
+    tx_msg.data[1] = 0xAD;
+    tx_msg.data[2] = 0xBE;
+    tx_msg.data[3] = 0xEF;
+    tx_msg.data[4] = 0xFE;
+    tx_msg.data[5] = 0xED;
+    tx_msg.data[6] = 0xFA;
+    tx_msg.data[7] = 0xCE;
 
-    // Set RAMPMODE to Positioning Mode
-    tmc5160_write_register(TMC5160_RAMPMODE, 0);
+    // Copy to the global variable for debugging, if needed
+    memcpy((void*)&sent_msg_for_debug, &tx_msg, sizeof(can_msg_t));
 
-    // --- Repetitive Motion Trigger ---
+    // 4. Send the message
+    can_send(&tx_msg);
+
+    // 5. Wait a short moment for the interrupt to process the message
+    delay(1000000);
+
+    // 6. Attempt to receive the message into a LOCAL, NON-VOLATILE variable
+    can_msg_t rx_msg;
+    memset(&rx_msg, 0, sizeof(can_msg_t)); // Clear it first
+    size_t received_count = can_recv(&rx_msg, 1);
+
+    // Copy to the global variable for debugging
+    if (received_count > 0) {
+        memcpy((void*)&received_msg_for_debug, &rx_msg, sizeof(can_msg_t));
+    }
+
+    // 7. Verify the result
+    if (received_count > 0) {
+        // We received a message. Now check if it's identical.
+        if ( (tx_msg.id == rx_msg.id) &&
+             (tx_msg.len == rx_msg.len) &&
+             (memcmp(tx_msg.data, rx_msg.data, tx_msg.len) == 0) )
+        {
+            test_status = 1; // Success!
+        } else {
+            test_status = -1; // Fail: Data mismatch
+        }
+    } else {
+        test_status = -1; // Fail: Did not receive any message
+    }
+
+    // 8. Stop here for debugging
     while(1) {
-        // Move to position 51200 (1 full revolution)
-        tmc5160_write_register(TMC5160_XTARGET, 51200);
-
-        // [FIX PER NOTEBOOK SUGGESTION] Wait for the move to complete using hardware status
-        wait_target_reached();
-        delay(1000000); // Add a short visual pause between moves
-
-        // Move back to position 0
-        tmc5160_write_register(TMC5160_XTARGET, 0);
-
-        // [FIX PER NOTEBOOK SUGGESTION] Wait for the move to complete
-        wait_target_reached();
-        delay(1000000); // Add a short visual pause
+        // Halt processor for inspection
     }
     return 0;
 }
