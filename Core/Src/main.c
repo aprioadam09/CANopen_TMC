@@ -1,53 +1,82 @@
-#include "stm32f4xx.h"
 #include "rcc.h"
 #include "can.h"
-#include <string.h>
+#include "sdev.h"
+#include "systick.h"
 
-// Global volatile variables for debugging the reception part
-volatile can_msg_t received_msg_for_debug;
-volatile uint32_t received_message_count = 0;
+// --- Lely CANopen Includes ---
+#include <lely/co/dev.h>
+#include <lely/co/nmt.h>
 
-void delay(volatile uint32_t count) {
-    while(count--);
+// --- C Standard Library Includes ---
+#include <time.h>
+
+// Global pointers for the Lely CANopen stack components
+static can_net_t *net = NULL;
+static co_dev_t *dev = NULL;
+static co_nmt_t *nmt = NULL;
+
+/**
+ * @brief Wrapper function to bridge our can_send() to Lely's can_send_func_t.
+ * @param msg  Pointer to the CAN message provided by Lely.
+ * @param data User-defined data pointer (unused).
+ * @return 0 on success, -1 on failure.
+ */
+static int on_can_send(const struct can_msg *msg, void *data) {
+    (void)data;
+    if (can_send(msg) == 1) {
+        return 0; // Success
+    }
+    return -1; // Failure
+}
+
+/**
+ * @brief Retrieves the current system time in milliseconds and converts it
+ *        to the 'struct timespec' format required by Lely.
+ * @param tp Pointer to the timespec structure to be filled.
+ */
+static void get_time(struct timespec *tp) {
+    uint32_t ms = millis();
+    tp->tv_sec = ms / 1000;
+    tp->tv_nsec = (ms % 1000) * 1000000;
 }
 
 int main(void) {
-    // 1. Basic hardware initialization
+    // --- Hardware Initialization (non-HAL) ---
     rcc_system_clock_config();
+    systick_init();
+    can_init(false); // Initialize CAN in normal bus mode
 
-    // 2. Initialize the CAN peripheral in NORMAL mode
-    can_init(false);
+    // --- Lely CANopen Stack Initialization ---
 
-    // 3. Prepare message structures
-    can_msg_t tx_msg; // For sending
-    can_msg_t rx_msg; // For receiving
+    // 1. Create the network interface
+    net = can_net_create();
 
-    uint8_t counter = 0;
+    // 2. Set the function that Lely will call to send a CAN frame
+    can_net_set_send_func(net, &on_can_send, NULL);
 
+    // 3. Create a CANopen device from our static Object Dictionary
+    dev = co_dev_create_from_sdev(&slave_sdev);
+
+    // 4. Create and start the NMT (Network Management) service
+    nmt = co_nmt_create(net, dev);
+    co_nmt_cs_ind(nmt, CO_NMT_CS_RESET_NODE); // Trigger the boot-up sequence
+
+    // --- Main Application Loop (Lely Scheduler) ---
     while(1) {
-        // --- PART A: TRANSMISSION ---
-        // Prepare a message to transmit from the STM32
-        tx_msg.id = 0x123; // Our device's ID
-        tx_msg.len = 1;
-        tx_msg.data[0] = counter; // Data payload will increment each second
+        struct can_msg rx_msg;
 
-        // Send the message
-        can_send(&tx_msg);
-
-        // --- PART B: RECEPTION ---
-        // Check if any message has been received from the outside world
-        if (can_recv(&rx_msg, 1) > 0) {
-            // A message was received! Copy it to our debug variable.
-            memcpy((void*)&received_msg_for_debug, &rx_msg, sizeof(can_msg_t));
-            received_message_count++;
-            // A breakpoint can be placed here to inspect the received message
+        // 1. Check our CAN driver's ring buffer for any new messages
+        if (can_recv(&rx_msg, 1)) {
+            // 2. If a message exists, pass it to the Lely stack for processing
+            can_net_recv(net, &rx_msg);
         }
 
-        // Increment the counter for the next transmission
-        counter++;
-
-        // Wait for approximately 1 second
-        delay(8000000);
+        // 3. Get the current time and process any time-based events in the Lely stack
+        //    (e.g., sending the scheduled Heartbeat message)
+        struct timespec now;
+        get_time(&now);
+        can_net_set_time(net, &now);
     }
+
     return 0;
 }
