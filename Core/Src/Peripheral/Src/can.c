@@ -7,7 +7,7 @@
 
 // --- Ring Buffer for CAN message reception (logic copied from PoC) ---
 #define CAN_RX_BUFFER_SIZE 32
-static can_msg_t rx_buffer[CAN_RX_BUFFER_SIZE];
+static struct can_msg rx_buffer[CAN_RX_BUFFER_SIZE];
 static volatile uint32_t rx_head = 0;
 static volatile uint32_t rx_tail = 0;
 
@@ -71,7 +71,7 @@ void can_init(bool loopback_mode) {
     while ((CAN1->MSR & CAN_MSR_INAK) != 0); // Wait for acknowledgment
 }
 
-size_t can_send(const can_msg_t *msg) {
+size_t can_send(const struct can_msg *msg) {
     uint32_t transmit_mailbox;
 
     // Check if any transmit mailbox is empty
@@ -101,12 +101,12 @@ size_t can_send(const can_msg_t *msg) {
     return 1;
 }
 
-size_t can_recv(can_msg_t *msgs, size_t n) {
+size_t can_recv(struct can_msg *msgs, size_t n) {
     size_t count = 0;
     uint32_t current_tail = rx_tail;
 
     while (count < n && current_tail != rx_head) {
-        memcpy(msgs, &rx_buffer[current_tail], sizeof(can_msg_t));
+        memcpy(msgs, &rx_buffer[current_tail], sizeof(struct can_msg));
         current_tail = (current_tail + 1) % CAN_RX_BUFFER_SIZE;
         msgs++;
         count++;
@@ -135,6 +135,8 @@ void CAN1_RX0_IRQHandler(void) {
             rx_buffer[rx_head].data[5] = (CAN1->sFIFOMailBox[0].RDHR >> 8) & 0xFF;
             rx_buffer[rx_head].data[6] = (CAN1->sFIFOMailBox[0].RDHR >> 16) & 0xFF;
             rx_buffer[rx_head].data[7] = (CAN1->sFIFOMailBox[0].RDHR >> 24) & 0xFF;
+
+            rx_buffer[rx_head].flags = 0;
 
             rx_head = next_head;
         }
