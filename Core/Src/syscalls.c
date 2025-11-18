@@ -174,3 +174,20 @@ int _execve(char *name, char **argv, char **env)
   errno = ENOMEM;
   return -1;
 }
+
+/**
+ * @brief A dummy implementation of _gettimeofday to satisfy the linker.
+ *        Lely CANopen uses this for certain time-related services, which
+ *        we are not using yet. For basic operation, returning an error
+ *        is sufficient.
+ * @param tv Pointer to a timeval struct.
+ * @param tz Pointer to a timezone struct.
+ * @return Always returns -1 and sets errno to ENOSYS.
+ */
+int _gettimeofday(struct timeval *tv, void *tz)
+{
+    (void)tv;
+    (void)tz;
+    errno = ENOSYS; // Function not implemented
+    return -1;
+}
