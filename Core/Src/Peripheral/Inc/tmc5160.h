@@ -11,10 +11,10 @@
 #define TMC5160_TPOWERDOWN      0x11 // Standstill Delay
 #define TMC5160_TPWMTHRS        0x13 // StealthChop voltage PWM mode
 #define TMC5160_CHOPCONF        0x6C // Chopper Configuration
-#define TMC5160_XTARGET         0x2D // Target Position
 
 // Ramp Generator Registers
 #define TMC5160_RAMPMODE        0x20 // Ramp Mode configuration
+#define TMC5160_XACTUAL			0x21
 #define TMC5160_V1              0x25 // First acceleration phase threshold speed
 #define TMC5160_AMAX            0x26 // Acceleration
 #define TMC5160_VMAX            0x27 // Maximum velocity
