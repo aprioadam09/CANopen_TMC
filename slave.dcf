@@ -37,12 +37,6 @@ SupportedObjects=3
 2=0x1001
 3=0x1018
 
-[OptionalObjects]
-SupportedObjects=3
-1=0x1012
-2=0x1017
-3=0x1F80
-
 [1000]
 ParameterName=Device type
 DataType=0x0007
@@ -52,18 +46,6 @@ AccessType=ro
 ParameterName=Error register
 DataType=0x0005
 AccessType=ro
-
-[1012]
-ParameterName=COB-ID time stamp object
-DataType=0x0007
-AccessType=rw
-DefaultValue=0x80000100
-
-[1017]
-ParameterName=Producer heartbeat time
-DataType=0x0006
-AccessType=rw
-DefaultValue=1000
 
 [1018]
 SubNumber=5
@@ -97,8 +79,169 @@ ParameterName=Serial number
 DataType=0x0007
 AccessType=ro
 
+[OptionalObjects]
+SupportedObjects=17
+1=0x1012
+2=0x1017
+3=0x1F80
+4=0x6040
+5=0x6041
+6=0x605d
+7=0x6060
+8=0x6062
+9=0x6064
+10=0x607a
+11=0x6081
+12=0x6083
+13=0x6084
+14=0x6086
+15=0x6098
+16=0x6099
+17=0x609a
+
+[1012]
+ParameterName=COB-ID time stamp object
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x80000100
+
+[1017]
+ParameterName=Producer heartbeat time
+DataType=0x0006
+AccessType=rw
+DefaultValue=1000
+
 [1F80]
 ParameterName=NMT startup
 DataType=0x0007
 AccessType=rw
 ParameterValue=0x00000004
+
+[6040]
+ParameterName=Control word
+ObjectType=7
+DataType=6
+AccessType=RWW
+PDOMapping=1
+
+[6041]
+ParameterName=Status word
+ObjectType=7
+DataType=6
+AccessType=RO
+PDOMapping=1
+
+[605d]
+ParameterName=Halt option code
+ObjectType=7
+DataType=3
+AccessType=RWW
+PDOMapping=1
+
+[6060]
+ParameterName=Modes of operation
+ObjectType=7
+DataType=5
+AccessType=RWW
+PDOMapping=1
+
+[6062]
+ParameterName=Commanded position
+ObjectType=7
+DataType=4
+AccessType=RO
+PDOMapping=1
+
+[6064]
+ParameterName=Actual motor position
+ObjectType=7
+DataType=4
+AccessType=RWR
+PDOMapping=1
+
+[607a]
+ParameterName=Profile target position
+ObjectType=7
+DataType=4
+AccessType=RWW
+PDOMapping=1
+
+[6081]
+ParameterName=Profile target velocity
+ObjectType=7
+DataType=4
+AccessType=RWW
+PDOMapping=1
+DefaultValue=0
+LowLimit=0
+HighLimit=500000000
+
+[6083]
+ParameterName=Profile target acceleration
+ObjectType=7
+DataType=7
+AccessType=RWW
+PDOMapping=1
+
+[6084]
+ParameterName=Profile target deceleration
+ObjectType=7
+DataType=7
+AccessType=RWW
+PDOMapping=1
+
+[6086]
+ParameterName=Motion profile type
+ObjectType=7
+DataType=3
+AccessType=RWW
+PDOMapping=1
+
+[6098]
+ParameterName=Homing method
+ObjectType=7
+DataType=2
+AccessType=RWW
+PDOMapping=1
+
+[6099]
+ParameterName=Homing speeds
+ObjectType=8
+SubNumber=3
+
+[6099sub0]
+ParameterName=Number of Entries
+ObjectType=7
+DataType=5
+AccessType=RO
+PDOMapping=0
+DefaultValue=2
+LowLimit=2
+HighLimit=2
+
+[6099sub1]
+ParameterName=Homing velocity (fast)
+ObjectType=7
+DataType=4
+AccessType=RWW
+PDOMapping=1
+DefaultValue=0
+LowLimit=0
+HighLimit=500000000
+
+[6099sub2]
+ParameterName=Homing velocity (slow)
+ObjectType=7
+DataType=4
+AccessType=RWW
+PDOMapping=1
+DefaultValue=0
+LowLimit=0
+HighLimit=500000000
+
+[609a]
+ParameterName=Homing acceleration
+ObjectType=7
+DataType=7
+AccessType=RWW
+PDOMapping=1
