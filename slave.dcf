@@ -30,6 +30,7 @@ Dummy0007=1
 
 [DeviceComissioning]
 NodeID=2
+Baudrate=125
 
 [MandatoryObjects]
 SupportedObjects=3
