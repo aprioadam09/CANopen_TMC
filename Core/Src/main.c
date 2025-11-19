@@ -2,6 +2,8 @@
 #include "can.h"
 #include "sdev.h"
 #include "systick.h"
+#include "spi.h"
+#include "tmc5160.h"
 
 // --- Lely CANopen Includes ---
 #include <lely/co/dev.h>
@@ -44,7 +46,25 @@ int main(void) {
     // --- Hardware Initialization (non-HAL) ---
     rcc_system_clock_config();
     systick_init();
+
+    spi1_init();
     can_init(false); // Initialize CAN in normal bus mode
+
+    tmc5160_init();
+
+    // --- Motion Profile Configuration ---
+	tmc5160_write_register(TMC5160_V1, 0);
+	tmc5160_write_register(TMC5160_AMAX, 1000);
+	tmc5160_write_register(TMC5160_DMAX, 1000);
+	tmc5160_write_register(TMC5160_D1, 1000);
+	tmc5160_write_register(TMC5160_VMAX, 51200);
+	tmc5160_write_register(TMC5160_VSTOP, 100);
+
+	// Add a zero-wait time for smooth direction reversals
+	tmc5160_write_register(TMC5160_TZEROWAIT, 5000);
+
+	// Set RAMPMODE to Positioning Mode
+	tmc5160_write_register(TMC5160_RAMPMODE, 0);
 
     // --- Lely CANopen Stack Initialization ---
 
