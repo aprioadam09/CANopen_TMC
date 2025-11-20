@@ -46,6 +46,9 @@ typedef enum {
 #define CW_CMD_ENABLE_OP        0x000F
 #define CW_CMD_FAULT_RESET      0x0080
 
+// [STATE MACHINE] Bit-bit penting di RAMP_STAT TMC5160
+#define RAMP_STAT_POSITION_REACHED (1 << 9)
+
 // [STATE MACHINE] Variabel global untuk state machine
 static volatile pds_state_t current_state = PDS_STATE_NOT_READY_TO_SWITCH_ON;
 static volatile uint16_t statusword = 0;
@@ -84,6 +87,8 @@ int main(void) {
     can_init(false); // Initialize CAN in normal bus mode
 
     tmc5160_init();
+
+    tmc5160_write_register(TMC5160_XACTUAL, 0);
 
     // --- Motion Profile Configuration ---
 	tmc5160_write_register(TMC5160_V1, 0);
@@ -232,6 +237,10 @@ static co_unsigned32_t on_write_target_pos(co_sub_t *sub, struct co_sdo_req *req
         return ac; // Return an error code if extraction fails
     }
 
+    // [LOGIKA BARU] Secara manual bersihkan flag 'Target reached' di Statusword kita
+	// sebelum memulai gerakan baru.
+	statusword &= ~SW_TARGET_REACHED;
+
     co_sub_dn(sub, &target_pos);
 
     tmc5160_write_register(TMC5160_XTARGET, target_pos);
@@ -278,6 +287,20 @@ static void update_statusword(void) {
     // if (tmc5160_is_target_reached()) {
     //     base_sw |= SW_TARGET_REACHED;
     // }
+
+    // --- [LOGIKA BARU UNTUK 'wait_move_done'] ---
+	// Hanya periksa status gerak jika drive sedang beroperasi
+	if (current_state == PDS_STATE_OPERATION_ENABLED) {
+		// Baca register status dari TMC5160
+		int32_t ramp_stat = tmc5160_read_register(TMC5160_RAMP_STAT);
+
+		// Jika bit 'position_reached' di TMC5160 aktif,
+		// maka atur bit 'Target reached' (Bit 10) di Statusword kita.
+		if (ramp_stat & RAMP_STAT_POSITION_REACHED) {
+			base_sw |= SW_TARGET_REACHED;
+		}
+	}
+	// Jika tidak, bit 'Target reached' akan secara otomatis 0.
 
     // Perbarui variabel global
     statusword = base_sw;
