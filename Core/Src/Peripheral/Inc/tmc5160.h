@@ -2,6 +2,7 @@
 #define PERIPHERAL_INC_TMC5160_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 // TMC5160 Register Addresses
 #define TMC5160_GCONF           0x00 // Global Configuration
@@ -57,6 +58,12 @@ int32_t tmc5160_read_register(uint8_t address);
  * It is based on the "Initialization Examples" from the TMC5160 datasheet.
  */
 void tmc5160_init(void);
+
+/**
+ * @brief Enables or disables the TMC5160 motor driver outputs.
+ * @param enable Set to true to enable the driver, false to disable.
+ */
+void tmc5160_set_driver_enabled(bool enable);
 
 
 #endif /* PERIPHERAL_INC_TMC5160_H_ */

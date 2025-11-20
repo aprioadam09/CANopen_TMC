@@ -1,5 +1,6 @@
 #include "tmc5160.h"
 #include "spi.h" // We depend on the SPI driver for communication
+#include <stdbool.h>
 
 void tmc5160_write_register(uint8_t address, int32_t value) {
     uint8_t address_byte = address | 0x80;
@@ -80,4 +81,22 @@ void tmc5160_init(void) {
     // The driver will switch from StealthChop to SpreadCycle when speed exceeds this value.
     // TPWM_THRS = 500 (a low speed value)
     tmc5160_write_register(TMC5160_TPWMTHRS, 0x000001F4);
+}
+
+void tmc5160_set_driver_enabled(bool enable) {
+    // Baca nilai CHOPCONF saat ini
+    int32_t chopconf = tmc5160_read_register(TMC5160_CHOPCONF);
+
+    if (enable) {
+        // Untuk mengaktifkan, kita perlu mengembalikan TOFF ke nilai operasinya.
+        // Kita menggunakan nilai default dari tmc5160_init(), yaitu 3.
+        chopconf |= 0x00000003; // Set TOFF bits [3:0] to 3
+    } else {
+        // Untuk menonaktifkan, kita set TOFF ke 0.
+        // Ini akan menonaktifkan semua bridge driver.
+        chopconf &= ~0x0000000F; // Clear TOFF bits [3:0]
+    }
+
+    // Tulis kembali nilai yang telah dimodifikasi
+    tmc5160_write_register(TMC5160_CHOPCONF, chopconf);
 }

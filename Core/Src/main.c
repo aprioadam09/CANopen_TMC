@@ -219,6 +219,12 @@ static co_unsigned32_t on_read_actual_pos(const co_sub_t *sub, struct co_sdo_req
 static co_unsigned32_t on_write_target_pos(co_sub_t *sub, struct co_sdo_req *req, void *data) {
     (void)data; // Unused
 
+    if (current_state != PDS_STATE_OPERATION_ENABLED) {
+		// Kembalikan Abort Code: "Data cannot be transferred or stored to the application
+		// because of the present device state."
+		return CO_SDO_AC_DATA_DEV;
+	}
+
     co_unsigned32_t ac = 0; // Abort Code, 0 = success
 
     int32_t target_pos;
@@ -329,6 +335,7 @@ static co_unsigned32_t on_write_controlword(co_sub_t *sub, struct co_sdo_req *re
         case PDS_STATE_SWITCHED_ON:
             if (command == CW_CMD_ENABLE_OP) { // Transisi 4
                 current_state = PDS_STATE_OPERATION_ENABLED;
+                tmc5160_set_driver_enabled(true);
             } else if (command == CW_CMD_SHUTDOWN) { // Transisi 6
                 current_state = PDS_STATE_READY_TO_SWITCH_ON;
             }
@@ -337,8 +344,10 @@ static co_unsigned32_t on_write_controlword(co_sub_t *sub, struct co_sdo_req *re
         case PDS_STATE_OPERATION_ENABLED:
             if (command == CW_CMD_DISABLE_OP) { // Transisi 5
                 current_state = PDS_STATE_SWITCHED_ON;
+                tmc5160_set_driver_enabled(false);
             } else if (command == CW_CMD_SHUTDOWN) { // Transisi 8
                 current_state = PDS_STATE_READY_TO_SWITCH_ON;
+                tmc5160_set_driver_enabled(false);
             }
             break;
 
