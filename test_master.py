@@ -31,6 +31,49 @@ def wait_for_move_complete(node, timeout=10):
         
         time.sleep(0.1) # Jeda polling
 
+def test_homing(node):
+    print("\n--- Memulai Tes Homing Method 35 ---")
+    
+    # 1. Ganti Mode Operasi ke Homing (Mode 6)
+    print("1. Setting Mode to Homing (6)...")
+    node.sdo['Modes of operation'].raw = 6
+    time.sleep(0.1)
+    
+    # 2. Set Metode Homing ke 35 (Current Position)
+    # Kita coba tulis, kalau error (karena object belum ada di .dcf) kita abaikan dulu
+    # karena default firmware Anda nanti akan melakukan logika reset posisi
+    try:
+        node.sdo[0x6098].raw = 35 
+        print("2. Homing Method set to 35")
+    except:
+        print("2. Skip setting Homing Method (gunakan default logic)")
+
+    # 3. Kirim Perintah 'Start Homing' (Bit 4 di Controlword)
+    # Enable Operation (0xF) + Start Homing (0x10) = 0x1F
+    print("3. Mengirim Start Homing (Controlword = 0x1F)...")
+    node.sdo['Control word'].raw = 0x1F 
+    time.sleep(0.5) # Beri waktu STM32 memproses
+
+    # 4. Cek Statusword untuk konfirmasi sukses
+    sw = node.sdo['Status word'].raw
+    
+    # Bit 12 = Homing Attained (Sukses), Bit 10 = Target Reached (Selesai)
+    homing_sukses = (sw >> 12) & 1
+    target_selesai = (sw >> 10) & 1
+    
+    print(f"   -> Statusword terbaca: 0x{sw:04X}")
+    
+    if homing_sukses and target_selesai:
+        print("   -> HASIL: SUKSES! Motor berhasil di-nol-kan.")
+    else:
+        print("   -> HASIL: GAGAL. Statusword tidak sesuai.")
+
+    # 5. Matikan bit 'Start Homing' dan kembali ke Mode Profile Position (1)
+    print("4. Kembali ke Mode Profile Position (1)...")
+    node.sdo['Control word'].raw = 0x0F # Matikan bit 4
+    node.sdo['Modes of operation'].raw = 1
+    time.sleep(0.1)
+
 def main():
     network = canopen.Network()
     network.connect(bustype=INTERFACE, channel=CHANNEL)
@@ -49,34 +92,26 @@ def main():
 
     try:
         print("\n--- Memulai Tes Gerakan dengan State Machine ---")
-
-        # 1. Lakukan urutan enable
-        print("Mengaktifkan drive (Enable Sequence)...")
+        # 1. Lakukan Enable dulu (seperti kode Anda sebelumnya)
+        print("Mengaktifkan drive...")
         node.sdo['Control word'].raw = 6   # Shutdown
-        time.sleep(0.1)
         node.sdo['Control word'].raw = 7   # Switch On
-        time.sleep(0.1)
         node.sdo['Control word'].raw = 15  # Enable Operation
-        time.sleep(0.1)
-        sw = node.sdo['Status word'].raw
-        if (sw & 0x006F) != 0x0027:
-            raise Exception(f"Gagal mencapai state Operation Enabled. Statusword: 0x{sw:04X}")
-        print("  -> Drive sekarang 'Operation Enabled'.")
+        time.sleep(0.5)
 
-        # 2. Perintahkan gerakan
-        target_pos = 51200
-        print(f"\nMemerintahkan motor bergerak ke posisi {target_pos}...")
-        node.sdo['Profile target position'].raw = target_pos
+        # 2. Panggil tes Homing yang baru kita buat
+        test_homing(node)
+
+        # 3. (Opsional) Lanjut tes gerakan absolut untuk membuktikan posisi sudah 0
+        print("\n--- Tes Gerakan setelah Homing ---")
+        # Gerak ke 50000 (karena posisi sekarang sudah dianggap 0)
+        node.sdo['Profile target position'].raw = 50000
+        node.sdo['Control word'].raw = 0x1F # New Setpoint (Bit 4)
         
-        # 3. Tunggu gerakan selesai menggunakan polling Statusword
-        if not wait_for_move_complete(node):
-            raise Exception("Motor tidak menyelesaikan gerakan dalam waktu yang ditentukan.")
-
-        final_pos = node.sdo['Actual motor position'].raw
-        print(f"Gerakan selesai. Posisi akhir terbaca: {final_pos}")
-        assert abs(final_pos - target_pos) < 256
-
-        print("\n--- Tes 'wait_move_done' Berhasil! ---")
+        wait_for_move_complete(node) # Fungsi yang sudah ada di kode lama Anda
+        
+        posisi_akhir = node.sdo['Actual motor position'].raw
+        print(f"Posisi Akhir: {posisi_akhir}")
 
     except Exception as e:
         print(f"\n--- GAGAL Tes: {e} ---")

@@ -52,6 +52,8 @@ typedef enum {
 // [STATE MACHINE] Variabel global untuk state machine
 static volatile pds_state_t current_state = PDS_STATE_NOT_READY_TO_SWITCH_ON;
 static volatile uint16_t statusword = 0;
+static int8_t current_mode_op = 0;
+static bool is_homing_attained = false; // Menyimpan status apakah homing sudah sukses
 
 // Global pointers for the Lely CANopen stack components
 static can_net_t *net = NULL;
@@ -65,6 +67,7 @@ static co_unsigned32_t on_read_actual_pos(const co_sub_t *sub, struct co_sdo_req
 static co_unsigned32_t on_write_target_pos(co_sub_t *sub, struct co_sdo_req *req, void *data);
 static co_unsigned32_t on_read_statusword(const co_sub_t *sub, struct co_sdo_req *req, void *data);
 static co_unsigned32_t on_write_controlword(co_sub_t *sub, struct co_sdo_req *req, void *data);
+static co_unsigned32_t on_write_mode_op(co_sub_t *sub, struct co_sdo_req *req, void *data);
 static void update_statusword(void);
 
 /**
@@ -134,6 +137,8 @@ int main(void) {
     co_sub_set_up_ind(co_dev_find_sub(dev, 0x6041, 0x00), &on_read_statusword, NULL);
 
     co_sub_set_dn_ind(co_dev_find_sub(dev, 0x6040, 0x00), &on_write_controlword, NULL);
+
+    co_sub_set_dn_ind(co_dev_find_sub(dev, 0x6060, 0x00), &on_write_mode_op, NULL);
 
     current_state = PDS_STATE_SWITCH_ON_DISABLED;
 
@@ -252,10 +257,13 @@ static co_unsigned32_t on_write_target_pos(co_sub_t *sub, struct co_sdo_req *req
  * @brief [STATE MACHINE] Updates the global 'statusword' variable based on the current state.
  *        This function also includes logic for other dynamic bits like 'Target Reached'.
  */
+/**
+ * @brief [STATE MACHINE] Updates the global 'statusword' variable based on the current state.
+ */
 static void update_statusword(void) {
     uint16_t base_sw = 0;
 
-    // Tentukan bit-bit dasar Statusword berdasarkan state saat ini (sesuai tabel CiA 402)
+    // 1. Tentukan status dasar berdasarkan State Machine (PDS State)
     switch (current_state) {
         case PDS_STATE_NOT_READY_TO_SWITCH_ON:
             base_sw = 0;
@@ -270,7 +278,7 @@ static void update_statusword(void) {
             base_sw = SW_READY_TO_SWITCH_ON | SW_SWITCHED_ON | SW_QUICK_STOP;
             break;
         case PDS_STATE_OPERATION_ENABLED:
-            base_sw = SW_READY_TO_SWITCH_ON | SW_SWITCHED_ON | SW_OPERATION_ENABLED | SW_QUICK_STOP;
+            base_sw = SW_READY_TO_SWITCH_ON | SW_SWITCHED_ON | SW_OPERATION_ENABLED | SW_QUICK_STOP | SW_VOLTAGE_ENABLED;
             break;
         case PDS_STATE_QUICK_STOP_ACTIVE:
             base_sw = SW_READY_TO_SWITCH_ON | SW_SWITCHED_ON | SW_OPERATION_ENABLED;
@@ -283,26 +291,27 @@ static void update_statusword(void) {
             break;
     }
 
-    // TODO: Tambahkan logika untuk bit dinamis lainnya di sini
-    // if (tmc5160_is_target_reached()) {
-    //     base_sw |= SW_TARGET_REACHED;
-    // }
+    // 2. Logika Tambahan (Hanya jika drive aktif/Enabled)
+    if (current_state == PDS_STATE_OPERATION_ENABLED) {
 
-    // --- [LOGIKA BARU UNTUK 'wait_move_done'] ---
-	// Hanya periksa status gerak jika drive sedang beroperasi
-	if (current_state == PDS_STATE_OPERATION_ENABLED) {
-		// Baca register status dari TMC5160
-		int32_t ramp_stat = tmc5160_read_register(TMC5160_RAMP_STAT);
+        // A. Cek Status Fisik Hardware (Apakah motor berhenti?)
+        // Ini penting untuk wait_move_done
+        int32_t ramp_stat = tmc5160_read_register(TMC5160_RAMP_STAT);
+        if (ramp_stat & RAMP_STAT_POSITION_REACHED) {
+            base_sw |= SW_TARGET_REACHED; // Set Bit 10
+        }
 
-		// Jika bit 'position_reached' di TMC5160 aktif,
-		// maka atur bit 'Target reached' (Bit 10) di Statusword kita.
-		if (ramp_stat & RAMP_STAT_POSITION_REACHED) {
-			base_sw |= SW_TARGET_REACHED;
-		}
-	}
-	// Jika tidak, bit 'Target reached' akan secara otomatis 0.
+        // B. Cek Logika Khusus Mode Homing [BAGIAN BARU]
+        // Kita cek catatan kecil (flag) 'is_homing_attained' di sini
+        if (current_mode_op == 6) { // Jika sedang Mode Homing
+            if (is_homing_attained) {
+                base_sw |= (1 << 12);          // Paksa Bit 12 (Homing Attained) Menyala
+                base_sw |= SW_TARGET_REACHED;  // Paksa Bit 10 (Target Reached) Menyala juga
+            }
+        }
+    }
 
-    // Perbarui variabel global
+    // 3. Tulis hasil akhirnya ke variabel global agar bisa dikirim ke Master
     statusword = base_sw;
 }
 
@@ -339,6 +348,28 @@ static co_unsigned32_t on_write_controlword(co_sub_t *sub, struct co_sdo_req *re
 
     // Tulis nilai baru ke OD lokal Lely
     co_sub_dn(sub, &command);
+
+    // --- LOGIKA HOMING (Baru) ---
+	// Jika Mode = 6 (Homing) DAN Bit 4 (Start Homing) aktif
+	if (current_mode_op == 6 && (command & 0x0010)) {
+		// Lakukan Homing Method 35 (Set Posisi 0)
+		tmc5160_write_register(TMC5160_XACTUAL, 0);
+		tmc5160_write_register(TMC5160_XTARGET, 0); // Reset target juga agar tidak loncat
+
+		// 2. Set Flag Global bahwa Homing Sukses
+		is_homing_attained = true;
+
+		// Beritahu Master bahwa Homing Selesai
+		// Set Bit 12 (Homing Attained) dan Bit 10 (Target Reached)
+		statusword |= (1 << 12);
+		statusword |= (1 << 10);
+		return ac; // Selesai, tidak perlu cek state machine lain
+	}
+
+	// Jika tidak sedang Homing, reset bit Homing Attained (Bit 12)
+	if (current_mode_op != 6) {
+		 statusword &= ~(1 << 12);
+	}
 
     // Proses transisi state berdasarkan perintah dan state saat ini
     // Ini adalah implementasi sederhana dari diagram di halaman 4 dokumen QCI-AN060
@@ -377,6 +408,34 @@ static co_unsigned32_t on_write_controlword(co_sub_t *sub, struct co_sdo_req *re
         // State lain (Quick Stop, Fault) akan diimplementasikan nanti
         default:
             break;
+    }
+
+    return ac;
+}
+
+// Callback saat Master menulis ke 0x6060 (Modes of Operation)
+// Hapus 'const' pada parameter pertama (co_sub_t *sub)
+static co_unsigned32_t on_write_mode_op(co_sub_t *sub, struct co_sdo_req *req, void *data) {
+    (void)data;
+    co_unsigned32_t ac = 0;
+    int8_t mode;
+
+    if (co_sdo_req_dn_val(req, CO_DEFTYPE_INTEGER8, &mode, &ac) == -1) {
+        return ac;
+    }
+
+    // Simpan mode ke variabel global
+    current_mode_op = mode;
+
+    // Update nilai object dictionary (sekarang aman karena 'sub' tidak const)
+    co_sub_dn(sub, &mode);
+
+    // --- PERBAIKAN BAGIAN INI JUGA ---
+    // Cast hasil return co_dev_find_sub menjadi (co_sub_t *) agar tidak dianggap const
+    co_sub_t *sub_disp = (co_sub_t *)co_dev_find_sub(dev, 0x6061, 0x00);
+
+    if (sub_disp) {
+        co_sub_set_val_i8(sub_disp, mode);
     }
 
     return ac;
