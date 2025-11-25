@@ -9,6 +9,8 @@
 #include <lely/co/dev.h>
 #include <lely/co/nmt.h>
 #include <lely/co/sdo.h>
+#include <lely/co/rpdo.h>
+#include <lely/co/tpdo.h>
 #include <lely/co/time.h>
 #include <lely/co/val.h>
 
@@ -69,6 +71,17 @@ static co_unsigned32_t on_read_statusword(const co_sub_t *sub, struct co_sdo_req
 static co_unsigned32_t on_write_controlword(co_sub_t *sub, struct co_sdo_req *req, void *data);
 static co_unsigned32_t on_write_mode_op(co_sub_t *sub, struct co_sdo_req *req, void *data);
 static void update_statusword(void);
+
+// Core logic functions (shared between SDO and PDO)
+static bool process_controlword(uint16_t command);
+static void process_mode_of_operation(int8_t mode);
+static bool process_target_position(int32_t target_pos);
+
+// PDO callback functions
+static void on_rpdo1_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, size_t n, void *data);
+static void on_rpdo2_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, size_t n, void *data);
+static void on_rpdo3_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, size_t n, void *data);
+static void register_rpdo_callbacks(void);
 
 /**
  * @brief Retrieves the current system time in milliseconds and converts it
@@ -140,10 +153,18 @@ int main(void) {
 
     co_sub_set_dn_ind(co_dev_find_sub(dev, 0x6060, 0x00), &on_write_mode_op, NULL);
 
+    register_rpdo_callbacks();
+
     current_state = PDS_STATE_SWITCH_ON_DISABLED;
+    uint32_t last_tpdo_time = 0;
 
     // --- Main Application Loop (Lely Scheduler) ---
     while(1) {
+    	// 3. Get the current time and process any time-based events in the Lely stack
+		struct timespec now;
+		get_time(&now);
+		can_net_set_time(net, &now);
+
         struct can_msg rx_msg;
 
         // 1. Check our CAN driver's ring buffer for any new messages
@@ -152,13 +173,25 @@ int main(void) {
             can_net_recv(net, &rx_msg);
         }
 
-        // 3. Get the current time and process any time-based events in the Lely stack
-        //    (e.g., sending the scheduled Heartbeat message)
-        struct timespec now;
-        get_time(&now);
-        can_net_set_time(net, &now);
-
+        // 4. Update statusword (tanpa trigger TPDO)
         update_statusword();
+
+        // 5. ← TAMBAHAN BARU: Trigger TPDO secara periodic (setiap 100ms)
+        uint32_t current_time = millis();
+        if (current_time - last_tpdo_time >= 100) {  // 100ms = 10 Hz
+            last_tpdo_time = current_time;
+
+            // Trigger TPDO untuk mengirim status update
+            co_tpdo_t *tpdo2 = co_nmt_get_tpdo(nmt, 2);
+            if (tpdo2) {
+                // Update actual position di OD sebelum trigger
+                int32_t actual_pos = tmc5160_read_register(TMC5160_XACTUAL);
+                co_dev_set_val_i32(dev, 0x6064, 0x00, actual_pos);
+
+                // Trigger TPDO2 (Statusword + Actual Position)
+                co_tpdo_event(tpdo2);
+            }
+        }
     }
 
     return 0;
@@ -227,30 +260,21 @@ static co_unsigned32_t on_read_actual_pos(const co_sub_t *sub, struct co_sdo_req
  *        the local Object Dictionary, and then commands the TMC5160 to move.
  */
 static co_unsigned32_t on_write_target_pos(co_sub_t *sub, struct co_sdo_req *req, void *data) {
-    (void)data; // Unused
-
-    if (current_state != PDS_STATE_OPERATION_ENABLED) {
-		// Kembalikan Abort Code: "Data cannot be transferred or stored to the application
-		// because of the present device state."
-		return CO_SDO_AC_DATA_DEV;
-	}
-
-    co_unsigned32_t ac = 0; // Abort Code, 0 = success
+    (void)data;
+    co_unsigned32_t ac = 0;
 
     int32_t target_pos;
     if (co_sdo_req_dn_val(req, CO_DEFTYPE_INTEGER32, &target_pos, &ac) == -1) {
-        return ac; // Return an error code if extraction fails
+        return ac;
     }
-
-    // [LOGIKA BARU] Secara manual bersihkan flag 'Target reached' di Statusword kita
-	// sebelum memulai gerakan baru.
-	statusword &= ~SW_TARGET_REACHED;
 
     co_sub_dn(sub, &target_pos);
 
-    tmc5160_write_register(TMC5160_XTARGET, target_pos);
+    if (!process_target_position(target_pos)) {
+        return CO_SDO_AC_DATA_DEV;
+    }
 
-    return ac;
+    return 0;
 }
 
 /**
@@ -293,26 +317,27 @@ static void update_statusword(void) {
 
     // 2. Logika Tambahan (Hanya jika drive aktif/Enabled)
     if (current_state == PDS_STATE_OPERATION_ENABLED) {
-
         // A. Cek Status Fisik Hardware (Apakah motor berhenti?)
-        // Ini penting untuk wait_move_done
         int32_t ramp_stat = tmc5160_read_register(TMC5160_RAMP_STAT);
         if (ramp_stat & RAMP_STAT_POSITION_REACHED) {
-            base_sw |= SW_TARGET_REACHED; // Set Bit 10
+            base_sw |= SW_TARGET_REACHED;
         }
 
-        // B. Cek Logika Khusus Mode Homing [BAGIAN BARU]
-        // Kita cek catatan kecil (flag) 'is_homing_attained' di sini
-        if (current_mode_op == 6) { // Jika sedang Mode Homing
+        // B. Cek Logika Khusus Mode Homing
+        if (current_mode_op == 6) {
             if (is_homing_attained) {
-                base_sw |= (1 << 12);          // Paksa Bit 12 (Homing Attained) Menyala
-                base_sw |= SW_TARGET_REACHED;  // Paksa Bit 10 (Target Reached) Menyala juga
+                base_sw |= (1 << 12);
+                base_sw |= SW_TARGET_REACHED;
             }
         }
     }
 
-    // 3. Tulis hasil akhirnya ke variabel global agar bisa dikirim ke Master
+    // 3. Update statusword
     statusword = base_sw;
+
+    // 4. Update OD (tapi TIDAK trigger TPDO di sini!)
+    // TPDO akan di-trigger secara manual di tempat yang tepat
+    co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
 }
 
 /**
@@ -340,77 +365,18 @@ static co_unsigned32_t on_write_controlword(co_sub_t *sub, struct co_sdo_req *re
     (void)data;
     co_unsigned32_t ac = 0;
 
-    // Ekstrak nilai 16-bit dari permintaan SDO
     uint16_t command;
     if (co_sdo_req_dn_val(req, CO_DEFTYPE_UNSIGNED16, &command, &ac) == -1) {
         return ac;
     }
 
-    // Tulis nilai baru ke OD lokal Lely
     co_sub_dn(sub, &command);
 
-    // --- LOGIKA HOMING (Baru) ---
-	// Jika Mode = 6 (Homing) DAN Bit 4 (Start Homing) aktif
-	if (current_mode_op == 6 && (command & 0x0010)) {
-		// Lakukan Homing Method 35 (Set Posisi 0)
-		tmc5160_write_register(TMC5160_XACTUAL, 0);
-		tmc5160_write_register(TMC5160_XTARGET, 0); // Reset target juga agar tidak loncat
-
-		// 2. Set Flag Global bahwa Homing Sukses
-		is_homing_attained = true;
-
-		// Beritahu Master bahwa Homing Selesai
-		// Set Bit 12 (Homing Attained) dan Bit 10 (Target Reached)
-		statusword |= (1 << 12);
-		statusword |= (1 << 10);
-		return ac; // Selesai, tidak perlu cek state machine lain
-	}
-
-	// Jika tidak sedang Homing, reset bit Homing Attained (Bit 12)
-	if (current_mode_op != 6) {
-		 statusword &= ~(1 << 12);
-	}
-
-    // Proses transisi state berdasarkan perintah dan state saat ini
-    // Ini adalah implementasi sederhana dari diagram di halaman 4 dokumen QCI-AN060
-    switch (current_state) {
-        case PDS_STATE_SWITCH_ON_DISABLED:
-            if (command == CW_CMD_SHUTDOWN) { // Transisi 2
-                current_state = PDS_STATE_READY_TO_SWITCH_ON;
-            }
-            break;
-
-        case PDS_STATE_READY_TO_SWITCH_ON:
-            if (command == CW_CMD_SWITCH_ON) { // Transisi 3
-                current_state = PDS_STATE_SWITCHED_ON;
-            }
-            break;
-
-        case PDS_STATE_SWITCHED_ON:
-            if (command == CW_CMD_ENABLE_OP) { // Transisi 4
-                current_state = PDS_STATE_OPERATION_ENABLED;
-                tmc5160_set_driver_enabled(true);
-            } else if (command == CW_CMD_SHUTDOWN) { // Transisi 6
-                current_state = PDS_STATE_READY_TO_SWITCH_ON;
-            }
-            break;
-
-        case PDS_STATE_OPERATION_ENABLED:
-            if (command == CW_CMD_DISABLE_OP) { // Transisi 5
-                current_state = PDS_STATE_SWITCHED_ON;
-                tmc5160_set_driver_enabled(false);
-            } else if (command == CW_CMD_SHUTDOWN) { // Transisi 8
-                current_state = PDS_STATE_READY_TO_SWITCH_ON;
-                tmc5160_set_driver_enabled(false);
-            }
-            break;
-
-        // State lain (Quick Stop, Fault) akan diimplementasikan nanti
-        default:
-            break;
+    if (!process_controlword(command)) {
+        return CO_SDO_AC_DATA_DEV;
     }
 
-    return ac;
+    return 0;
 }
 
 // Callback saat Master menulis ke 0x6060 (Modes of Operation)
@@ -424,19 +390,183 @@ static co_unsigned32_t on_write_mode_op(co_sub_t *sub, struct co_sdo_req *req, v
         return ac;
     }
 
-    // Simpan mode ke variabel global
+    co_sub_dn(sub, &mode);
+    process_mode_of_operation(mode);
+
+    return 0;
+}
+
+/**
+ * @brief Core logic untuk memproses Controlword
+ * @param command Nilai Controlword yang baru
+ * @return true jika berhasil, false jika ditolak
+ */
+static bool process_controlword(uint16_t command) {
+    // --- HOMING LOGIC ---
+    if (current_mode_op == 6 && (command & 0x0010)) {
+        tmc5160_write_register(TMC5160_XACTUAL, 0);
+        tmc5160_write_register(TMC5160_XTARGET, 0);
+        is_homing_attained = true;
+        statusword |= (1 << 12) | (1 << 10);
+        co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
+        return true;
+    }
+
+    if (current_mode_op != 6) {
+        statusword &= ~(1 << 12);
+        co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
+    }
+
+    // --- STATE MACHINE TRANSITIONS ---
+    switch (current_state) {
+        case PDS_STATE_SWITCH_ON_DISABLED:
+            if (command == CW_CMD_SHUTDOWN) {
+                current_state = PDS_STATE_READY_TO_SWITCH_ON;
+            }
+            break;
+
+        case PDS_STATE_READY_TO_SWITCH_ON:
+            if (command == CW_CMD_SWITCH_ON) {
+                current_state = PDS_STATE_SWITCHED_ON;
+            }
+            break;
+
+        case PDS_STATE_SWITCHED_ON:
+            if (command == CW_CMD_ENABLE_OP) {
+                current_state = PDS_STATE_OPERATION_ENABLED;
+                tmc5160_set_driver_enabled(true);
+            } else if (command == CW_CMD_SHUTDOWN) {
+                current_state = PDS_STATE_READY_TO_SWITCH_ON;
+            }
+            break;
+
+        case PDS_STATE_OPERATION_ENABLED:
+            if (command == CW_CMD_DISABLE_OP) {
+                current_state = PDS_STATE_SWITCHED_ON;
+                tmc5160_set_driver_enabled(false);
+            } else if (command == CW_CMD_SHUTDOWN) {
+                current_state = PDS_STATE_READY_TO_SWITCH_ON;
+                tmc5160_set_driver_enabled(false);
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    update_statusword();
+
+    // ← TAMBAHAN BARU: Trigger TPDO setelah state transition
+	co_tpdo_t *tpdo1 = co_nmt_get_tpdo(nmt, 1);
+	if (tpdo1) {
+		co_tpdo_event(tpdo1);  // Kirim statusword update segera
+	}
+    return true;
+}
+
+/**
+ * @brief Core logic untuk memproses Mode of Operation
+ * @param mode Mode baru (1=PP, 6=Homing, dll)
+ */
+static void process_mode_of_operation(int8_t mode) {
     current_mode_op = mode;
 
-    // Update nilai object dictionary (sekarang aman karena 'sub' tidak const)
-    co_sub_dn(sub, &mode);
-
-    // --- PERBAIKAN BAGIAN INI JUGA ---
-    // Cast hasil return co_dev_find_sub menjadi (co_sub_t *) agar tidak dianggap const
     co_sub_t *sub_disp = (co_sub_t *)co_dev_find_sub(dev, 0x6061, 0x00);
-
     if (sub_disp) {
         co_sub_set_val_i8(sub_disp, mode);
     }
+}
 
-    return ac;
+/**
+ * @brief Core logic untuk memproses Target Position
+ * @param target_pos Posisi target dalam pulses
+ * @return true jika diterima, false jika ditolak
+ */
+static bool process_target_position(int32_t target_pos) {
+    if (current_state != PDS_STATE_OPERATION_ENABLED) {
+        return false;
+    }
+
+    statusword &= ~SW_TARGET_REACHED;
+    co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
+
+    tmc5160_write_register(TMC5160_XTARGET, target_pos);
+
+    // ← TAMBAHAN BARU: Trigger TPDO setelah new target
+	co_tpdo_t *tpdo1 = co_nmt_get_tpdo(nmt, 1);
+	if (tpdo1) {
+		co_tpdo_event(tpdo1);
+	}
+
+    return true;
+}
+
+/**
+ * @brief Callback untuk RPDO1 - Controlword only
+ */
+static void on_rpdo1_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, size_t n, void *data) {
+    (void)pdo;
+    (void)ptr;
+    (void)n;
+    (void)data;
+
+    if (ac != 0) return;
+
+    uint16_t command = co_dev_get_val_u16(dev, 0x6040, 0x00);
+    process_controlword(command);
+}
+
+/**
+ * @brief Callback untuk RPDO2 - Controlword + Mode of Operation
+ */
+static void on_rpdo2_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, size_t n, void *data) {
+    (void)pdo;
+    (void)ptr;
+    (void)n;
+    (void)data;
+
+    if (ac != 0) return;
+
+    int8_t mode = co_dev_get_val_i8(dev, 0x6060, 0x00);
+    uint16_t command = co_dev_get_val_u16(dev, 0x6040, 0x00);
+
+    process_mode_of_operation(mode);
+    process_controlword(command);
+}
+
+/**
+ * @brief Callback untuk RPDO3 - Controlword + Target Position
+ */
+static void on_rpdo3_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, size_t n, void *data) {
+    (void)pdo;
+    (void)ptr;
+    (void)n;
+    (void)data;
+
+    if (ac != 0) return;
+
+    int32_t target_pos = co_dev_get_val_i32(dev, 0x607A, 0x00);
+    uint16_t command = co_dev_get_val_u16(dev, 0x6040, 0x00);
+
+    process_target_position(target_pos);
+    process_controlword(command);
+}
+
+/**
+ * @brief Register semua RPDO callbacks
+ */
+static void register_rpdo_callbacks(void) {
+    co_rpdo_t *rpdo1 = co_nmt_get_rpdo(nmt, 1);
+    co_rpdo_t *rpdo2 = co_nmt_get_rpdo(nmt, 2);
+    co_rpdo_t *rpdo3 = co_nmt_get_rpdo(nmt, 3);
+
+    if (rpdo1) {
+        co_rpdo_set_ind(rpdo1, &on_rpdo1_write, NULL);
+    }
+    if (rpdo2) {
+        co_rpdo_set_ind(rpdo2, &on_rpdo2_write, NULL);
+    }
+    if (rpdo3) {
+        co_rpdo_set_ind(rpdo3, &on_rpdo3_write, NULL);
+    }
 }
