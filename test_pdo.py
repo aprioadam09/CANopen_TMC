@@ -177,6 +177,9 @@ def main():
         configure_pdos(node)
         setup_pdo_callbacks(node)
         time.sleep(0.5)
+
+        print("Mengubah NMT State ke OPERATIONAL...")
+        node.nmt.state = 'OPERATIONAL'
         
         # Test sequence dengan PDO
         enable_drive_pdo(node)
