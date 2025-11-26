@@ -17,6 +17,11 @@
 // --- C Standard Library Includes ---
 #include <time.h>
 
+// NMT State constants
+#define CO_NMT_ST_BOOTUP         0x00
+#define CO_NMT_ST_STOP           0x04  // PRE-OPERATIONAL
+#define CO_NMT_ST_START          0x05  // OPERATIONAL
+
 // [STATE MACHINE] Definisi state CiA 402, sesuai diagram
 typedef enum {
     PDS_STATE_NOT_READY_TO_SWITCH_ON,
@@ -178,18 +183,19 @@ int main(void) {
 
         // 5. ← TAMBAHAN BARU: Trigger TPDO secara periodic (setiap 100ms)
         uint32_t current_time = millis();
-        if (current_time - last_tpdo_time >= 100) {  // 100ms = 10 Hz
+        if (current_time - last_tpdo_time >= 100) {
             last_tpdo_time = current_time;
 
-            // Trigger TPDO untuk mengirim status update
-            co_tpdo_t *tpdo2 = co_nmt_get_tpdo(nmt, 2);
-            if (tpdo2) {
-                // Update actual position di OD sebelum trigger
-                int32_t actual_pos = tmc5160_read_register(TMC5160_XACTUAL);
-                co_dev_set_val_i32(dev, 0x6064, 0x00, actual_pos);
+            // ✨ Check NMT state before sending TPDO
+            co_unsigned8_t nmt_state = co_nmt_get_st(nmt);
 
-                // Trigger TPDO2 (Statusword + Actual Position)
-                co_tpdo_event(tpdo2);
+            if (nmt_state == CO_NMT_ST_START) {  // Only in OPERATIONAL
+                co_tpdo_t *tpdo2 = co_nmt_get_tpdo(nmt, 2);
+                if (tpdo2) {
+                    int32_t actual_pos = tmc5160_read_register(TMC5160_XACTUAL);
+                    co_dev_set_val_i32(dev, 0x6064, 0x00, actual_pos);
+                    co_tpdo_event(tpdo2);
+                }
             }
         }
     }

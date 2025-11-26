@@ -197,21 +197,42 @@ def main():
         
         print("\n=== SEMUA TEST PDO SELESAI ===")
         
+    except KeyboardInterrupt:
+        print("\n\n!!! Interrupted by user !!!")
     except Exception as e:
         print(f"\n!!! ERROR: {e}")
         import traceback
         traceback.print_exc()
     
     finally:
-        print("\nShutdown drive...")
+        print("\n" + "="*50)
+        print("SHUTDOWN SEQUENCE")
+        print("="*50)
+        
         try:
+            # Step 1: Disable drive
+            print("1. Disabling drive...")
             node.rpdo[1]['Control word'].raw = 0x06
             node.rpdo[1].transmit()
-        except:
-            pass
+            time.sleep(0.2)
+            
+            # Step 2: ✨ Switch to PRE-OPERATIONAL (stop PDOs)
+            print("2. Switching to PRE-OPERATIONAL...")
+            network.nmt.send_command(0x80)  # Stop all nodes
+            # Or: node.nmt.state = 'PRE-OPERATIONAL'
+            time.sleep(0.3)
+            
+            print("3. Node stopped, PDOs disabled")
+            
+        except Exception as e:
+            print(f"Shutdown error (non-critical): {e}")
         
+        # Step 3: Disconnect
+        print("4. Disconnecting from bus...")
         network.disconnect()
-        print("Disconnected")
+        print("="*50)
+        print("Disconnected cleanly")
+        print("="*50)
 
 if __name__ == '__main__':
     main()
