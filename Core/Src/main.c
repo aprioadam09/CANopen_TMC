@@ -525,6 +525,24 @@ static void execute_target_position(void) {
     // Baca target position dari OD
     int32_t target_pos = co_dev_get_val_i32(dev, 0x607A, 0x00);
 
+    // ✨ TAMBAHAN BARU: Baca parameter motion dari OD
+    int32_t velocity = co_dev_get_val_i32(dev, 0x6081, 0x00);
+    uint32_t accel = co_dev_get_val_u32(dev, 0x6083, 0x00);
+    uint32_t decel = co_dev_get_val_u32(dev, 0x6084, 0x00);
+
+    // ✨ Apply parameter ke TMC5160 (jika tidak 0)
+    // Kita cek != 0 karena default value di OD adalah 0
+    if (velocity != 0) {
+        tmc5160_write_register(TMC5160_VMAX, velocity);
+    }
+    if (accel != 0) {
+        tmc5160_write_register(TMC5160_AMAX, accel);
+    }
+    if (decel != 0) {
+        tmc5160_write_register(TMC5160_DMAX, decel);
+        tmc5160_write_register(TMC5160_D1, decel);  // D1 biasanya sama dengan DMAX
+    }
+
     // EKSEKUSI gerakan fisik
     tmc5160_write_register(TMC5160_XTARGET, target_pos);
 
