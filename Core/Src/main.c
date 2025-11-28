@@ -61,6 +61,7 @@ static volatile pds_state_t current_state = PDS_STATE_NOT_READY_TO_SWITCH_ON;
 static volatile uint16_t statusword = 0;
 static int8_t current_mode_op = 0;
 static bool is_homing_attained = false; // Menyimpan status apakah homing sudah sukses
+static uint16_t previous_controlword = 0;
 
 // Global pointers for the Lely CANopen stack components
 static can_net_t *net = NULL;
@@ -81,6 +82,7 @@ static void update_statusword(void);
 static bool process_controlword(uint16_t command);
 static void process_mode_of_operation(int8_t mode);
 static bool process_target_position(int32_t target_pos);
+static void execute_target_position(void);
 
 // PDO callback functions
 static void on_rpdo1_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, size_t n, void *data);
@@ -261,9 +263,7 @@ static co_unsigned32_t on_read_actual_pos(const co_sub_t *sub, struct co_sdo_req
 }
 
 /**
- * @brief Callback function executed by Lely on an SDO write request for object 0x607A.
- *        This function receives the target position from the master, writes it to
- *        the local Object Dictionary, and then commands the TMC5160 to move.
+ * @brief Callback executed on SDO write to Target Position (0x607A)
  */
 static co_unsigned32_t on_write_target_pos(co_sub_t *sub, struct co_sdo_req *req, void *data) {
     (void)data;
@@ -274,8 +274,7 @@ static co_unsigned32_t on_write_target_pos(co_sub_t *sub, struct co_sdo_req *req
         return ac;
     }
 
-    co_sub_dn(sub, &target_pos);
-
+    // HANYA SIMPAN, tidak eksekusi
     if (!process_target_position(target_pos)) {
         return CO_SDO_AC_DATA_DEV;
     }
@@ -415,6 +414,8 @@ static bool process_controlword(uint16_t command) {
         is_homing_attained = true;
         statusword |= (1 << 12) | (1 << 10);
         co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
+
+        previous_controlword = command;
         return true;
     }
 
@@ -422,6 +423,17 @@ static bool process_controlword(uint16_t command) {
         statusword &= ~(1 << 12);
         co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
     }
+
+    // --- PROFILE POSITION MODE - DETEKSI RISING EDGE BIT 4 ---
+	if (current_mode_op == 1) {  // Profile Position Mode
+		bool bit4_previous = (previous_controlword & 0x0010) != 0;
+		bool bit4_current = (command & 0x0010) != 0;
+
+		// Rising edge terdeteksi: 0 → 1
+		if (!bit4_previous && bit4_current) {
+			execute_target_position();  // SEKARANG baru eksekusi!
+		}
+	}
 
     // --- STATE MACHINE TRANSITIONS ---
     switch (current_state) {
@@ -462,6 +474,8 @@ static bool process_controlword(uint16_t command) {
 
     update_statusword();
 
+    previous_controlword = command;
+
     // ← TAMBAHAN BARU: Trigger TPDO setelah state transition
 	co_tpdo_t *tpdo1 = co_nmt_get_tpdo(nmt, 1);
 	if (tpdo1) {
@@ -484,7 +498,7 @@ static void process_mode_of_operation(int8_t mode) {
 }
 
 /**
- * @brief Core logic untuk memproses Target Position
+ * @brief Menyimpan target position baru ke OD, TANPA menggerakkan motor
  * @param target_pos Posisi target dalam pulses
  * @return true jika diterima, false jika ditolak
  */
@@ -493,18 +507,36 @@ static bool process_target_position(int32_t target_pos) {
         return false;
     }
 
+    // Hanya simpan ke Object Dictionary, BELUM gerakkan motor
+    co_dev_set_val_i32(dev, 0x607A, 0x00, target_pos);
+
+    // Clear bit Target Reached karena ada setpoint baru (belum dieksekusi)
     statusword &= ~SW_TARGET_REACHED;
     co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
 
+    return true;
+}
+
+/**
+ * @brief EKSEKUSI gerakan ke target position yang sudah disimpan
+ * @note Hanya dipanggil saat rising edge bit 4 terdeteksi
+ */
+static void execute_target_position(void) {
+    // Baca target position dari OD
+    int32_t target_pos = co_dev_get_val_i32(dev, 0x607A, 0x00);
+
+    // EKSEKUSI gerakan fisik
     tmc5160_write_register(TMC5160_XTARGET, target_pos);
 
-    // ← TAMBAHAN BARU: Trigger TPDO setelah new target
-	co_tpdo_t *tpdo1 = co_nmt_get_tpdo(nmt, 1);
-	if (tpdo1) {
-		co_tpdo_event(tpdo1);
-	}
+    // Clear bit Target Reached karena gerakan baru dimulai
+    statusword &= ~SW_TARGET_REACHED;
+    co_dev_set_val_u16(dev, 0x6041, 0x00, statusword);
 
-    return true;
+    // Trigger TPDO untuk broadcast perubahan status
+    co_tpdo_t *tpdo1 = co_nmt_get_tpdo(nmt, 1);
+    if (tpdo1) {
+        co_tpdo_event(tpdo1);
+    }
 }
 
 /**
@@ -551,11 +583,13 @@ static void on_rpdo3_write(co_rpdo_t *pdo, co_unsigned32_t ac, const void *ptr, 
 
     if (ac != 0) return;
 
-    int32_t target_pos = co_dev_get_val_i32(dev, 0x607A, 0x00);
-    uint16_t command = co_dev_get_val_u16(dev, 0x6040, 0x00);
+	// 1. Simpan target position dulu (BELUM eksekusi)
+	int32_t target_pos = co_dev_get_val_i32(dev, 0x607A, 0x00);
+	process_target_position(target_pos);
 
-    process_target_position(target_pos);
-    process_controlword(command);
+	// 2. Process controlword (akan deteksi rising edge bit 4 dan eksekusi jika ada)
+	uint16_t command = co_dev_get_val_u16(dev, 0x6040, 0x00);
+	process_controlword(command);
 }
 
 /**

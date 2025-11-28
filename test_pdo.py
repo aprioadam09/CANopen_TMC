@@ -123,22 +123,29 @@ def test_homing_pdo(node):
     node.rpdo[2].transmit()
     time.sleep(0.2)
 
-def move_absolute_pdo(node, target_position):
-    """Gerakkan motor ke posisi absolut menggunakan RPDO3"""
-    print(f"\n--- Move Absolute via PDO ke {target_position} ---")
+def move_absolute_pdo_compliant(node, target_position):
+    """Gerakan compliant CiA 402 dengan rising edge bit 4"""
+    print(f"\n--- Move Absolute (CiA 402 Compliant) ke {target_position} ---")
     
-    # RPDO3: Controlword (0x6040) + Target Position (0x607A)
-    node.rpdo[3]['Control word'].raw = 0x0F  # Pastikan masih enabled
+    # Step 1: Tulis target position (motor BELUM bergerak)
+    print("1. Menulis Target Position (motor belum bergerak)...")
     node.rpdo[3]['Profile target position'].raw = target_position
+    node.rpdo[3]['Control word'].raw = 0x0F  # Bit 4 = 0
+    node.rpdo[3].transmit()
+    time.sleep(0.1)
+    
+    # Step 2: Clear bit 4 (jika sebelumnya 1)
+    print("2. Clear bit 4 (ensure clean state)...")
+    node.rpdo[3]['Control word'].raw = 0x0F  # Bit 4 = 0
     node.rpdo[3].transmit()
     time.sleep(0.05)
     
-    # Trigger new setpoint dengan set bit 4
-    node.rpdo[3]['Control word'].raw = 0x1F  # Enable + New Setpoint
-    node.rpdo[3]['Profile target position'].raw = target_position
+    # Step 3: Set bit 4 = 1 untuk trigger gerakan (RISING EDGE!)
+    print("3. Set bit 4 = 1 (TRIGGER MOTION via rising edge)...")
+    node.rpdo[3]['Control word'].raw = 0x1F  # Bit 4 = 1
     node.rpdo[3].transmit()
     
-    print(f"  Perintah gerakan ke {target_position} dikirim via PDO")
+    print(f"  ✓ Gerakan ke {target_position} triggered via rising edge!")
 
 def wait_move_done_pdo(node, timeout=10):
     """Tunggu gerakan selesai dengan polling Statusword"""
@@ -188,7 +195,7 @@ def main():
         # Test beberapa gerakan
         positions = [50000, -30000, 100000, 0]
         for pos in positions:
-            move_absolute_pdo(node, pos)
+            move_absolute_pdo_compliant(node, pos)
             wait_move_done_pdo(node)
             
             actual = node.sdo['Actual motor position'].raw
