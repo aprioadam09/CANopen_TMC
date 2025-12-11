@@ -4,6 +4,4 @@
 
 # Eclipse project files (user-specific)
 .settings/
-.project
-.cproject
 *.launch
